@@ -1316,6 +1316,14 @@ namespace Oxide.Plugins
                             if (item.ContainsKey("position"))
                                 targetPos = Convert.ToInt32(item["position"]);
 
+                            var heldEntity = i.GetHeldEntity();
+                            if (heldEntity != null && heldEntity is Detonator detonator)
+                            {
+                                detonator.frequency = dataInt;
+                                if ( detonator.IsOn() )
+                                    RFManager.AddBroadcaster(detonator.frequency, detonator);
+                            }
+                            
                             i.position = targetPos;
                             box.inventory.Insert(i);
                         }
