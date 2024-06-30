@@ -1719,10 +1719,10 @@ namespace Oxide.Plugins
                             0);
                     }
 
-                    var timer = ioEntity as TimerSwitch;
-                    if (timer != null && ioData.ContainsKey("timerLength"))
+                    var timerSwitch = ioEntity as TimerSwitch;
+                    if (timerSwitch != null && ioData.ContainsKey("timerLength"))
                     {
-                        timer.timerLength = Convert.ToInt32(ioData["timerLength"]);
+                        timerSwitch.timerLength = Convert.ToSingle(ioData["timerLength"]);
                     }
 
                     var rfBroadcaster = ioEntity as RFBroadcaster;
