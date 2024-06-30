@@ -1,4 +1,4 @@
-﻿//If debug is defined it will add a stopwatch to the paste and copydata which can be used to profile copying and pasting.
+//If debug is defined it will add a stopwatch to the paste and copydata which can be used to profile copying and pasting.
 // #define DEBUG
 
 using System;
@@ -458,6 +458,10 @@ namespace Oxide.Plugins
 
                     foreach (var entity in list)
                     {
+                        // Skip metal detector flags
+                        if (entity.GetComponent<MetalDetectorSource>() != null)
+                            continue;
+                        
                         if (!houseList.Add(entity))
                             continue;
 
