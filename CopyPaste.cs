@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -1072,617 +1071,7 @@ namespace Oxide.Plugins
             {
                 entities.Remove(data);
 
-                var prefabname = (string)data["prefabname"];
-#if DEBUG
-                Puts($"{nameof(PasteLoop)}: Entity {prefabname}");
-#endif
-
-                var skinid = ulong.Parse(data["skinid"].ToString());
-                var pos = (Vector3)data["position"];
-                var rot = (Quaternion)data["rotation"];
-
-                var ownerId = pasteData.BasePlayer?.userID ?? 0;
-                if (data.ContainsKey("ownerid"))
-                {
-#if DEBUG
-                    Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1077");
-#endif
-                    ownerId = Convert.ToUInt64(data["ownerid"]);
-                }
-
-                if (pasteData.CheckPlaced && CheckPlaced(prefabname, pos, rot))
-                    continue;
-
-                if (prefabname.Contains("pillar"))
-                    continue;
-
-                // Used to copy locks for no reason in previous versions (is included in the slots info so no need to copy locks) so just skipping them.
-                if (prefabname.Contains("locks"))
-                    continue;
-
-                var entity = GameManager.server.CreateEntity(prefabname, pos, rot);
-
-                if (entity == null)
-                    continue;
-
-                var transform = entity.transform;
-                transform.position = pos;
-                transform.rotation = rot;
-
-                if (pasteData.BasePlayer != null)
-                    entity.SendMessage("SetDeployedBy", pasteData.BasePlayer, SendMessageOptions.DontRequireReceiver);
-
-                if (pasteData.Ownership)
-                    entity.OwnerID = ownerId;
-
-                var buildingBlock = entity as BuildingBlock;
-
-                if (buildingBlock != null)
-                {
-                    buildingBlock.blockDefinition = PrefabAttribute.server.Find<Construction>(buildingBlock.prefabID);
-                    var grade = (BuildingGrade.Enum)Convert.ToInt32(data["grade"]);
-                    if (skinid != 0ul && !HasGrade(buildingBlock, grade, skinid))
-                        skinid = 0ul;
-                    buildingBlock.SetGrade(grade);
-                    if (!pasteData.Stability)
-                        buildingBlock.grounded = true;
-                }
-
-                var decayEntity = entity as DecayEntity;
-
-                if (decayEntity != null)
-                {
-                    if (pasteData.BuildingId == 0)
-                        pasteData.BuildingId = BuildingManager.server.NewBuildingID();
-
-                    decayEntity.AttachToBuilding(pasteData.BuildingId);
-                }
-
-                var stabilityEntity = entity as StabilityEntity;
-
-                if (stabilityEntity != null)
-                {
-                    if (!stabilityEntity.grounded)
-                    {
-                        stabilityEntity.grounded = true;
-                        pasteData.StabilityEntities.Add(stabilityEntity);
-                    }
-                }
-
-                entity.skinID = skinid;
-
-                entity.Spawn();
-
-                var baseCombat = entity as BaseCombatEntity;
-
-                if (buildingBlock != null)
-                {
-                    buildingBlock.SetHealthToMax();
-                    buildingBlock.UpdateSkin();
-                    buildingBlock.SendNetworkUpdate();
-                    buildingBlock.ResetUpkeepTime();
-                    object customColour;
-                    if (data.TryGetValue("customColour", out customColour))
-                        buildingBlock.SetCustomColour(Convert.ToUInt32(customColour));
-                }
-                else if (baseCombat != null)
-                    baseCombat.SetHealth(baseCombat.MaxHealth());
-
-                pasteData.PastedEntities.AddRange(TryPasteSlots(entity, data, pasteData));
-
-                var box = entity as StorageContainer;
-                if (box != null)
-                {
-                    if (box.inventory == null)
-                    {
-                        box.inventory = new ItemContainer();
-                        box.inventory.ServerInitialize(null, box.inventorySlots);
-                        box.inventory.GiveUID();
-                        box.inventory.entityOwner = box;
-                    }
-                    else box.inventory.Clear();
-
-                    var items = new List<object>();
-
-                    if (data.ContainsKey("items"))
-                        items = data["items"] as List<object>;
-
-                    foreach (var itemDef in items)
-                    {
-                        var item = itemDef as Dictionary<string, object>;
-                        var itemid = Convert.ToInt32(item["id"]);
-                        var itemamount = Convert.ToInt32(item["amount"]);
-                        var itemskin = ulong.Parse(item["skinid"].ToString());
-                        var itemcondition = Convert.ToSingle(item["condition"]);
-                        var dataInt = 0;
-                        if (item.ContainsKey("dataInt"))
-                        {
-                            dataInt = Convert.ToInt32(item["dataInt"]);
-                        }
-
-                        var growableEntity = entity as GrowableEntity;
-                        if (growableEntity != null)
-                        {
-                            if (data.ContainsKey("genes"))
-                            {
-                                var genesData = (int)data["genes"];
-
-                                if (genesData > 0)
-                                {
-                                    GrowableGeneEncoding.DecodeIntToGenes(genesData, growableEntity.Genes);
-                                }
-                            }
-
-                            if (data.ContainsKey("hasParent"))
-                            {
-                                var isParented = (bool)data["hasParent"];
-
-                                if (isParented)
-                                {
-                                    RaycastHit hitInfo;
-
-                                    if (Physics.Raycast(growableEntity.transform.position, Vector3.down, out hitInfo,
-                                            .5f, Rust.Layers.DefaultDeployVolumeCheck))
-                                    {
-                                        var parentEntity = hitInfo.GetEntity();
-                                        if (parentEntity != null)
-                                        {
-                                            growableEntity.SetParent(parentEntity, true);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (pasteData.IsItemReplace)
-                            itemid = GetItemId(itemid);
-
-                        var i = ItemManager.CreateByItemID(itemid, itemamount, itemskin);
-
-                        if (i != null)
-                        {
-                            i.condition = itemcondition;
-
-                            if (item.ContainsKey("text"))
-                                i.text = item["text"].ToString();
-
-                            if (item.ContainsKey("name"))
-                                i.name = item["name"]?.ToString();
-
-                            if (item.ContainsKey("blueprintTarget"))
-                            {
-                                var blueprintTarget = Convert.ToInt32(item["blueprintTarget"]);
-
-                                if (pasteData.IsItemReplace)
-                                    blueprintTarget = GetItemId(blueprintTarget);
-
-                                i.blueprintTarget = blueprintTarget;
-                            }
-
-                            if (dataInt > 0)
-                            {
-                                i.instanceData = new ProtoBuf.Item.InstanceData()
-                                {
-                                    ShouldPool = false,
-                                    dataInt = dataInt
-                                };
-                            }
-
-                            if (item.ContainsKey("magazine"))
-                            {
-                                var heldent = i.GetHeldEntity();
-
-                                if (heldent != null)
-                                {
-                                    var projectiles = heldent.GetComponent<BaseProjectile>();
-
-                                    if (projectiles != null)
-                                    {
-                                        var magazine = item["magazine"] as Dictionary<string, object>;
-                                        var ammotype = int.Parse(magazine.Keys.ToArray()[0]);
-                                        var ammoamount = int.Parse(magazine[ammotype.ToString()].ToString());
-
-                                        if (pasteData.IsItemReplace)
-                                            ammotype = GetItemId(ammotype);
-
-                                        projectiles.primaryMagazine.ammoType = ItemManager.FindItemDefinition(ammotype);
-                                        projectiles.primaryMagazine.contents = ammoamount;
-                                    }
-
-                                    //TODO Doesn't add water to some containers
-
-                                    if (item.ContainsKey("items"))
-                                    {
-                                        var itemContainsList = item["items"] as List<object>;
-
-                                        foreach (var itemContains in itemContainsList)
-                                        {
-                                            var contents = itemContains as Dictionary<string, object>;
-
-                                            var contentsItemId = Convert.ToInt32(contents["id"]);
-
-                                            if (pasteData.IsItemReplace)
-                                                contentsItemId = GetItemId(contentsItemId);
-
-                                            i.contents.AddItem(ItemManager.FindItemDefinition(contentsItemId),
-                                                Convert.ToInt32(contents["amount"]));
-                                        }
-                                    }
-                                }
-                            }
-
-                            var targetPos = -1;
-
-                            if (item.ContainsKey("position"))
-                                targetPos = Convert.ToInt32(item["position"]);
-
-                            var heldEntity = i.GetHeldEntity();
-                            if (heldEntity != null && heldEntity is Detonator detonator)
-                            {
-                                detonator.frequency = dataInt;
-                                if ( detonator.IsOn() )
-                                    RFManager.AddBroadcaster(detonator.frequency, detonator);
-                            }
-                            
-                            i.position = targetPos;
-                            box.inventory.Insert(i);
-                        }
-                    }
-                }
-
-                var autoTurret = entity as AutoTurret;
-                if (autoTurret != null)
-                {
-                    var authorizedPlayers = new List<ulong>();
-
-                    if (data.ContainsKey("autoturret"))
-                    {
-#if DEBUG
-                        Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1305");
-#endif
-                        var autoTurretData = data["autoturret"] as Dictionary<string, object>;
-                        authorizedPlayers = (autoTurretData["authorizedPlayers"] as List<object>)
-                            .Select(Convert.ToUInt64).ToList();
-                    }
-
-                    if (pasteData.BasePlayer != null && !authorizedPlayers.Contains(pasteData.BasePlayer.userID) &&
-                        pasteData.Auth)
-                        authorizedPlayers.Add(pasteData.BasePlayer.userID);
-
-                    foreach (var userId in authorizedPlayers)
-                    {
-                        autoTurret.authorizedPlayers.Add(new PlayerNameID
-                        {
-                            userid = userId,
-                            username = "Player"
-                        });
-                    }
-
-                    autoTurret.SendNetworkUpdate();
-                }
-
-                var containerIo = entity as ContainerIOEntity;
-                if (containerIo != null)
-                {
-                    if (containerIo.inventory == null)
-                    {
-                        containerIo.CreateInventory(true);
-                        containerIo.OnInventoryFirstCreated(containerIo.inventory);
-                    }
-                    else containerIo.inventory.Clear();
-
-                    var items = new List<object>();
-
-                    if (data.ContainsKey("items"))
-                        items = data["items"] as List<object>;
-
-                    foreach (var itemDef in items)
-                    {
-                        var itemJson = itemDef as Dictionary<string, object>;
-                        var itemid = Convert.ToInt32(itemJson["id"]);
-                        var itemamount = Convert.ToInt32(itemJson["amount"]);
-                        var itemskin = ulong.Parse(itemJson["skinid"].ToString());
-                        var itemcondition = Convert.ToSingle(itemJson["condition"]);
-                        var dataInt = 0;
-                        if (itemJson.ContainsKey("dataInt"))
-                        {
-                            dataInt = Convert.ToInt32(itemJson["dataInt"]);
-                        }
-
-                        if (pasteData.IsItemReplace)
-                            itemid = GetItemId(itemid);
-
-                        var item = ItemManager.CreateByItemID(itemid, itemamount, itemskin);
-
-                        if (item != null)
-                        {
-                            item.condition = itemcondition;
-
-                            if (itemJson.ContainsKey("text"))
-                                item.text = itemJson["text"].ToString();
-
-                            if (itemJson.ContainsKey("name"))
-                                item.name = itemJson["name"]?.ToString();
-
-                            if (itemJson.ContainsKey("blueprintTarget"))
-                            {
-                                var blueprintTarget = Convert.ToInt32(itemJson["blueprintTarget"]);
-
-                                if (pasteData.IsItemReplace)
-                                    blueprintTarget = GetItemId(blueprintTarget);
-
-                                item.blueprintTarget = blueprintTarget;
-                            }
-
-                            if (dataInt > 0)
-                            {
-                                item.instanceData = new ProtoBuf.Item.InstanceData()
-                                {
-                                    ShouldPool = false,
-                                    dataInt = dataInt
-                                };
-                            }
-
-                            if (itemJson.ContainsKey("magazine"))
-                            {
-                                var heldent = item.GetHeldEntity();
-
-                                if (heldent != null)
-                                {
-                                    var projectiles = heldent.GetComponent<BaseProjectile>();
-
-                                    if (projectiles != null)
-                                    {
-                                        var magazine = itemJson["magazine"] as Dictionary<string, object>;
-                                        var ammotype = int.Parse(magazine.Keys.ToArray()[0]);
-                                        var ammoamount = int.Parse(magazine[ammotype.ToString()].ToString());
-
-                                        if (pasteData.IsItemReplace)
-                                            ammotype = GetItemId(ammotype);
-
-                                        projectiles.primaryMagazine.ammoType = ItemManager.FindItemDefinition(ammotype);
-                                        projectiles.primaryMagazine.contents = ammoamount;
-                                    }
-
-                                    //TODO Doesn't add water to some containers
-
-                                    if (itemJson.ContainsKey("items"))
-                                    {
-                                        var itemContainsList = itemJson["items"] as List<object>;
-
-                                        foreach (var itemContains in itemContainsList)
-                                        {
-                                            var contents = itemContains as Dictionary<string, object>;
-
-                                            var contentsItemId = Convert.ToInt32(contents["id"]);
-
-                                            if (pasteData.IsItemReplace)
-                                                contentsItemId = GetItemId(contentsItemId);
-
-                                            item.contents.AddItem(ItemManager.FindItemDefinition(contentsItemId),
-                                                Convert.ToInt32(contents["amount"]));
-                                        }
-                                    }
-                                }
-                            }
-
-                            var targetPos = -1;
-                            if (itemJson.ContainsKey("position"))
-                                targetPos = Convert.ToInt32(itemJson["position"]);
-
-                            item.position = targetPos;
-                            containerIo.inventory.Insert(item);
-                        }
-                    }
-
-                    if (autoTurret != null)
-                    {
-                        autoTurret.Invoke(autoTurret.UpdateAttachedWeapon, 0.5f);
-                    }
-
-                    containerIo.SendNetworkUpdate();
-                }
-
-                var sign = entity as Signage;
-                if (sign != null && data.ContainsKey("sign"))
-                {
-                    var signData = data["sign"] as Dictionary<string, object>;
-
-                    if (signData.ContainsKey("amount"))
-                    {
-                        int amount;
-                        if (int.TryParse(signData["amount"].ToString(), out amount))
-                        {
-                            for (var num = 0; num < amount; num++)
-                            {
-                                if (signData.ContainsKey($"texture{num}"))
-                                {
-                                    var imageBytes = Convert.FromBase64String(signData[$"texture{num}"].ToString());
-
-                                    FixSignage(sign, imageBytes, num);
-                                }
-                            }
-                        }
-                    }
-                    else if (signData.ContainsKey("texture"))
-                    {
-                        var imageBytes = Convert.FromBase64String(signData["texture"].ToString());
-
-                        FixSignage(sign, imageBytes, 0);
-                    }
-
-                    if (Convert.ToBoolean(signData["locked"]))
-                        sign.SetFlag(BaseEntity.Flags.Locked, true);
-
-                    sign.SendNetworkUpdate();
-                }
-
-                var lights = entity as AdvancedChristmasLights;
-                if (lights != null)
-                {
-                    if (data.ContainsKey("points"))
-                    {
-                        var points = data["points"] as List<object>;
-                        if (points != null && points.Count > 0)
-                        {
-                            foreach (Dictionary<string, object> point in points)
-                            {
-                                lights.points.Add(new AdvancedChristmasLights.pointEntry
-                                    { normal = (Vector3)point["normal"], point = (Vector3)point["point"] });
-                            }
-                        }
-                    }
-
-                    if (data.ContainsKey("animationStyle"))
-                    {
-                        lights.animationStyle = (AdvancedChristmasLights.AnimationType)data["animationStyle"];
-                    }
-                }
-
-                var sleepingBag = entity as SleepingBag;
-                if (sleepingBag != null && data.ContainsKey("sleepingbag"))
-                {
-                    var bagData = data["sleepingbag"] as Dictionary<string, object>;
-
-                    sleepingBag.niceName = bagData["niceName"].ToString();
-                    sleepingBag.deployerUserID = ulong.Parse(bagData["deployerUserID"].ToString());
-                    sleepingBag.SetPublic(Convert.ToBoolean(bagData["isPublic"]));
-                }
-
-                var cupboard = entity as BuildingPrivlidge;
-                if (cupboard != null)
-                {
-                    var authorizedPlayers = new List<ulong>();
-
-                    if (data.ContainsKey("cupboard"))
-                    {
-#if DEBUG
-                        Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1521");
-#endif
-                        var cupboardData = data["cupboard"] as Dictionary<string, object>;
-                        authorizedPlayers = (cupboardData["authorizedPlayers"] as List<object>).Select(Convert.ToUInt64)
-                            .ToList();
-                    }
-
-                    if (pasteData.BasePlayer != null && !authorizedPlayers.Contains(pasteData.BasePlayer.userID) &&
-                        pasteData.Auth)
-                        authorizedPlayers.Add(pasteData.BasePlayer.userID);
-
-                    foreach (var userId in authorizedPlayers)
-                    {
-                        cupboard.authorizedPlayers.Add(new PlayerNameID
-                        {
-                            userid = userId,
-                            username = "Player"
-                        });
-                    }
-
-                    cupboard.SendNetworkUpdate();
-                }
-
-                var cctvRc = entity as CCTV_RC;
-                if (cctvRc != null && data.ContainsKey("cctv"))
-                {
-                    var cctv = (Dictionary<string, object>)data["cctv"];
-                    cctvRc.yawAmount = Convert.ToSingle(cctv["yaw"]);
-                    cctvRc.pitchAmount = Convert.ToSingle(cctv["pitch"]);
-                    cctvRc.rcIdentifier = cctv["rcIdentifier"].ToString();
-                    cctvRc.SendNetworkUpdate();
-                }
-
-                var vendingMachine = entity as VendingMachine;
-                if (vendingMachine != null && data.ContainsKey("vendingmachine"))
-                {
-                    var vendingData = data["vendingmachine"] as Dictionary<string, object>;
-
-                    vendingMachine.shopName = vendingData["shopName"].ToString();
-                    vendingMachine.SetFlag(BaseEntity.Flags.Reserved4,
-                        Convert.ToBoolean(vendingData["isBroadcasting"]));
-
-                    var sellOrders = vendingData["sellOrders"] as List<object>;
-
-                    foreach (var orderPreInfo in sellOrders)
-                    {
-                        var orderInfo = orderPreInfo as Dictionary<string, object>;
-
-                        if (!orderInfo.ContainsKey("inStock"))
-                        {
-                            orderInfo["inStock"] = 0;
-                            orderInfo["currencyIsBP"] = false;
-                            orderInfo["itemToSellIsBP"] = false;
-                        }
-
-                        int itemToSellId = Convert.ToInt32(orderInfo["itemToSellID"]),
-                            currencyId = Convert.ToInt32(orderInfo["currencyID"]);
-
-                        if (pasteData.IsItemReplace)
-                        {
-                            itemToSellId = GetItemId(itemToSellId);
-                            currencyId = GetItemId(currencyId);
-                        }
-
-                        vendingMachine.sellOrders.sellOrders.Add(new ProtoBuf.VendingMachine.SellOrder
-                        {
-                            ShouldPool = false,
-                            itemToSellID = itemToSellId,
-                            itemToSellAmount = Convert.ToInt32(orderInfo["itemToSellAmount"]),
-                            currencyID = currencyId,
-                            currencyAmountPerItem = Convert.ToInt32(orderInfo["currencyAmountPerItem"]),
-                            inStock = Convert.ToInt32(orderInfo["inStock"]),
-                            currencyIsBP = Convert.ToBoolean(orderInfo["currencyIsBP"]),
-                            itemToSellIsBP = Convert.ToBoolean(orderInfo["itemToSellIsBP"])
-                        });
-                    }
-
-                    vendingMachine.FullUpdate();
-                }
-
-                var ioEntity = entity as IOEntity;
-
-                if (ioEntity != null)
-                {
-                    var ioData = new Dictionary<string, object>();
-
-                    if (data.ContainsKey("IOEntity"))
-                    {
-                        ioData = data["IOEntity"] as Dictionary<string, object> ?? new Dictionary<string, object>();
-                    }
-
-                    ioData.Add("entity", ioEntity);
-                    ioData.Add("newId", ioEntity.net.ID.Value);
-
-                    object oldIdObject;
-                    if (ioData.TryGetValue("oldID", out oldIdObject))
-                    {
-#if DEBUG
-                        Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1619");
-#endif
-                        var oldId = Convert.ToUInt64(oldIdObject);
-                        pasteData.IoEntities.Add(oldId, ioData);
-                    }
-                }
-
-                var flagsData = new Dictionary<string, object>();
-
-                if (data.ContainsKey("flags"))
-                    flagsData = data["flags"] as Dictionary<string, object>;
-
-                var flags = new Dictionary<BaseEntity.Flags, bool>();
-
-                foreach (var flagData in flagsData)
-                {
-                    BaseEntity.Flags baseFlag;
-                    if (Enum.TryParse(flagData.Key, out baseFlag))
-                        flags.Add(baseFlag, Convert.ToBoolean(flagData.Value));
-                }
-
-                foreach (var flag in flags)
-                {
-                    entity.SetFlag(flag.Key, flag.Value);
-                }
-
-                pasteData.PastedEntities.Add(entity);
-                pasteData.CallbackSpawned?.Invoke(entity);
+                PasteEntity(data, pasteData);
             }
 
             if (entities.Count > 0)
@@ -1691,168 +1080,7 @@ namespace Oxide.Plugins
             {
                 foreach (var ioData in pasteData.IoEntities.Values.ToArray())
                 {
-                    if (!ioData.ContainsKey("entity"))
-                        continue;
-
-
-                    var ioEntity = ioData["entity"] as IOEntity;
-
-                    List<object> inputs = null;
-                    if (ioData.ContainsKey("inputs"))
-                        inputs = ioData["inputs"] as List<object>;
-
-                    var electricalBranch = ioEntity as ElectricalBranch;
-                    if (electricalBranch != null && ioData.ContainsKey("branchAmount"))
-                    {
-                        electricalBranch.branchAmount = Convert.ToInt32(ioData["branchAmount"]);
-                    }
-
-                    var counter = ioEntity as PowerCounter;
-                    if (counter != null)
-                    {
-                        if (ioData.ContainsKey("targetNumber"))
-                            counter.targetCounterNumber = Convert.ToInt32(ioData["targetNumber"]);
-
-                        object counterNumber;
-                        counter.SetCounterNumber(ioData.TryGetValue("counterNumber", out counterNumber) ?
-                            Convert.ToInt32(counterNumber) :
-                            0);
-                    }
-
-                    var timerSwitch = ioEntity as TimerSwitch;
-                    if (timerSwitch != null && ioData.ContainsKey("timerLength"))
-                    {
-                        timerSwitch.timerLength = Convert.ToSingle(ioData["timerLength"]);
-                    }
-
-                    var rfBroadcaster = ioEntity as RFBroadcaster;
-                    if (rfBroadcaster != null && ioData.ContainsKey("frequency"))
-                    {
-                        int newFrequency = Convert.ToInt32(ioData["frequency"]);
-                        if (ioEntity.IsPowered())
-                            RFManager.AddBroadcaster(newFrequency, rfBroadcaster);
-                        rfBroadcaster.frequency = newFrequency;
-                        rfBroadcaster.MarkDirty();
-                    }
-
-                    var rfReceiver = ioEntity as RFReceiver;
-                    if (rfReceiver != null && ioData.ContainsKey("frequency"))
-                    {
-                        int newFrequency = Convert.ToInt32(ioData["frequency"]);
-                        RFManager.AddListener(newFrequency, rfReceiver);
-                        rfReceiver.frequency = newFrequency;
-                        rfReceiver.MarkDirty();
-                    }
-
-                    var doorManipulator = ioEntity as CustomDoorManipulator;
-                    if (doorManipulator != null)
-                    {
-                        var door = doorManipulator.FindDoor();
-                        doorManipulator.SetTargetDoor(door);
-                    }
-
-                    if (inputs != null && inputs.Count > 0)
-                    {
-                        for (var index = 0; index < inputs.Count; index++)
-                        {
-                            var input = inputs[index] as Dictionary<string, object>;
-                            object oldIdObject;
-                            if (!input.TryGetValue("connectedID", out oldIdObject))
-                                continue;
-
-#if DEBUG
-                            Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1712");
-#endif
-                            var oldId = Convert.ToUInt64(oldIdObject);
-
-                            if (oldId != 0 && pasteData.IoEntities.ContainsKey(oldId))
-                            {
-                                if (ioEntity.inputs[index] == null)
-                                    ioEntity.inputs[index] = new IOEntity.IOSlot();
-
-                                var ioConnection = pasteData.IoEntities[oldId];
-                                if (ioConnection.ContainsKey("newId"))
-                                {
-#if DEBUG
-                    Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1719");
-#endif
-                                    ioEntity.inputs[index].connectedTo.entityRef.uid =
-                                        new NetworkableId(Convert.ToUInt64(ioConnection["newId"]));
-                                }
-                            }
-                        }
-                    }
-
-                    List<object> outputs = null;
-                    if (ioData.ContainsKey("outputs"))
-                        outputs = ioData["outputs"] as List<object>;
-
-                    if (outputs != null && outputs.Count > 0)
-                    {
-                        for (var index = 0; index < outputs.Count; index++)
-                        {
-                            var output = outputs[index] as Dictionary<string, object>;
-#if DEBUG
-                            Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1744");
-#endif
-                            var oldId = Convert.ToUInt64(output["connectedID"]);
-
-                            if (oldId != 0 && pasteData.IoEntities.ContainsKey(oldId))
-                            {
-                                if (ioEntity.outputs[index] == null)
-                                    ioEntity.outputs[index] = new IOEntity.IOSlot();
-
-                                var ioConnection = pasteData.IoEntities[oldId];
-
-                                if (ioConnection.ContainsKey("newId"))
-                                {
-                                    var ioEntity2 = ioConnection["entity"] as IOEntity;
-                                    var connectedToSlot = Convert.ToInt32(output["connectedToSlot"]);
-                                    var ioOutput = ioEntity.outputs[index];
-
-                                    ioOutput.connectedTo = new IOEntity.IORef();
-                                    ioOutput.connectedTo.Set(ioEntity2);
-                                    ioOutput.connectedToSlot = connectedToSlot;
-                                    ioOutput.connectedTo.Init();
-
-                                    ioEntity2.inputs[connectedToSlot].connectedTo = new IOEntity.IORef();
-                                    ioEntity2.inputs[connectedToSlot].connectedTo.Set(ioEntity);
-                                    ioEntity2.inputs[connectedToSlot].connectedToSlot = index;
-                                    ioEntity2.inputs[connectedToSlot].connectedTo.Init();
-
-                                    ioOutput.niceName = output["niceName"] as string;
-
-                                    object wireColour;
-                                    if (output.TryGetValue("wireColour", out wireColour))
-                                        ioOutput.wireColour = (WireTool.WireColour)Convert.ToInt32(wireColour);
-
-                                    ioOutput.type = (IOEntity.IOType)Convert.ToInt32(output["type"]);
-                                }
-
-                                if (output.ContainsKey("linePoints"))
-                                {
-                                    var linePoints = output["linePoints"] as List<object>;
-                                    if (linePoints != null)
-                                    {
-                                        var lineList = new List<Vector3>();
-                                        foreach (var point in linePoints)
-                                        {
-                                            var linePoint = point as Dictionary<string, object>;
-                                            lineList.Add(new Vector3(
-                                                Convert.ToSingle(linePoint["x"]),
-                                                Convert.ToSingle(linePoint["y"]),
-                                                Convert.ToSingle(linePoint["z"])));
-                                        }
-
-                                        ioEntity.outputs[index].linePoints = lineList.ToArray();
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    ioEntity.MarkDirtyForceUpdateOutputs();
-                    ioEntity.SendNetworkUpdate();
+                    ProgressIOEntity(ioData, pasteData);
                 }
 
                 foreach (var entity in pasteData.StabilityEntities)
@@ -1878,6 +1106,787 @@ namespace Oxide.Plugins
             }
         }
 
+        private void PasteEntity(Dictionary<string, object> data, PasteData pasteData)
+        {
+            var prefabname = (string)data["prefabname"];
+#if DEBUG
+            Puts($"{nameof(PasteLoop)}: Entity {prefabname}");
+#endif
+
+            var skinid = ulong.Parse(data["skinid"].ToString());
+            var pos = (Vector3)data["position"];
+            var rot = (Quaternion)data["rotation"];
+
+            var ownerId = pasteData.BasePlayer?.userID ?? 0;
+            if (data.ContainsKey("ownerid"))
+            {
+#if DEBUG
+                Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1077");
+#endif
+                ownerId = Convert.ToUInt64(data["ownerid"]);
+            }
+
+            if (pasteData.CheckPlaced && CheckPlaced(prefabname, pos, rot))
+                return;
+
+            if (prefabname.Contains("pillar"))
+                return;
+
+            // Used to copy locks for no reason in previous versions (is included in the slots info so no need to copy locks) so just skipping them.
+            if (prefabname.Contains("locks"))
+                return;
+
+            var entity = GameManager.server.CreateEntity(prefabname, pos, rot);
+
+            if (entity == null)
+                return;
+
+            var transform = entity.transform;
+            transform.position = pos;
+            transform.rotation = rot;
+
+            if (pasteData.BasePlayer != null)
+                entity.SendMessage("SetDeployedBy", pasteData.BasePlayer, SendMessageOptions.DontRequireReceiver);
+
+            if (pasteData.Ownership)
+                entity.OwnerID = ownerId;
+
+            var buildingBlock = entity as BuildingBlock;
+
+            if (buildingBlock != null)
+            {
+                buildingBlock.blockDefinition = PrefabAttribute.server.Find<Construction>(buildingBlock.prefabID);
+                var grade = (BuildingGrade.Enum)Convert.ToInt32(data["grade"]);
+                if (skinid != 0ul && !HasGrade(buildingBlock, grade, skinid))
+                    skinid = 0ul;
+                buildingBlock.SetGrade(grade);
+                if (!pasteData.Stability)
+                    buildingBlock.grounded = true;
+            }
+
+            var decayEntity = entity as DecayEntity;
+
+            if (decayEntity != null)
+            {
+                if (pasteData.BuildingId == 0)
+                    pasteData.BuildingId = BuildingManager.server.NewBuildingID();
+
+                decayEntity.AttachToBuilding(pasteData.BuildingId);
+            }
+
+            var stabilityEntity = entity as StabilityEntity;
+
+            if (stabilityEntity != null)
+            {
+                if (!stabilityEntity.grounded)
+                {
+                    stabilityEntity.grounded = true;
+                    pasteData.StabilityEntities.Add(stabilityEntity);
+                }
+            }
+
+            entity.skinID = skinid;
+
+            entity.Spawn();
+
+            var baseCombat = entity as BaseCombatEntity;
+
+            if (buildingBlock != null)
+            {
+                buildingBlock.SetHealthToMax();
+                buildingBlock.UpdateSkin();
+                buildingBlock.SendNetworkUpdate();
+                buildingBlock.ResetUpkeepTime();
+                object customColour;
+                if (data.TryGetValue("customColour", out customColour))
+                    buildingBlock.SetCustomColour(Convert.ToUInt32(customColour));
+            }
+            else if (baseCombat != null)
+                baseCombat.SetHealth(baseCombat.MaxHealth());
+
+            pasteData.PastedEntities.AddRange(TryPasteSlots(entity, data, pasteData));
+
+            var box = entity as StorageContainer;
+            if (box != null)
+            {
+                if (box.inventory == null)
+                {
+                    box.inventory = new ItemContainer();
+                    box.inventory.ServerInitialize(null, box.inventorySlots);
+                    box.inventory.GiveUID();
+                    box.inventory.entityOwner = box;
+                }
+                else box.inventory.Clear();
+
+                var items = new List<object>();
+
+                if (data.ContainsKey("items"))
+                    items = data["items"] as List<object>;
+
+                foreach (var itemDef in items)
+                {
+                    var item = itemDef as Dictionary<string, object>;
+                    var itemid = Convert.ToInt32(item["id"]);
+                    var itemamount = Convert.ToInt32(item["amount"]);
+                    var itemskin = ulong.Parse(item["skinid"].ToString());
+                    var itemcondition = Convert.ToSingle(item["condition"]);
+                    var dataInt = 0;
+                    if (item.ContainsKey("dataInt"))
+                    {
+                        dataInt = Convert.ToInt32(item["dataInt"]);
+                    }
+
+                    var growableEntity = entity as GrowableEntity;
+                    if (growableEntity != null)
+                    {
+                        if (data.ContainsKey("genes"))
+                        {
+                            var genesData = (int)data["genes"];
+
+                            if (genesData > 0)
+                            {
+                                GrowableGeneEncoding.DecodeIntToGenes(genesData, growableEntity.Genes);
+                            }
+                        }
+
+                        if (data.ContainsKey("hasParent"))
+                        {
+                            var isParented = (bool)data["hasParent"];
+
+                            if (isParented)
+                            {
+                                RaycastHit hitInfo;
+
+                                if (Physics.Raycast(growableEntity.transform.position, Vector3.down, out hitInfo,
+                                        .5f, Rust.Layers.DefaultDeployVolumeCheck))
+                                {
+                                    var parentEntity = hitInfo.GetEntity();
+                                    if (parentEntity != null)
+                                    {
+                                        growableEntity.SetParent(parentEntity, true);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (pasteData.IsItemReplace)
+                        itemid = GetItemId(itemid);
+
+                    var i = ItemManager.CreateByItemID(itemid, itemamount, itemskin);
+
+                    if (i != null)
+                    {
+                        i.condition = itemcondition;
+
+                        if (item.ContainsKey("text"))
+                            i.text = item["text"].ToString();
+
+                        if (item.ContainsKey("name"))
+                            i.name = item["name"]?.ToString();
+
+                        if (item.ContainsKey("blueprintTarget"))
+                        {
+                            var blueprintTarget = Convert.ToInt32(item["blueprintTarget"]);
+
+                            if (pasteData.IsItemReplace)
+                                blueprintTarget = GetItemId(blueprintTarget);
+
+                            i.blueprintTarget = blueprintTarget;
+                        }
+
+                        if (dataInt > 0)
+                        {
+                            i.instanceData = new ProtoBuf.Item.InstanceData()
+                            {
+                                ShouldPool = false,
+                                dataInt = dataInt
+                            };
+                        }
+
+                        if (item.ContainsKey("magazine"))
+                        {
+                            var heldent = i.GetHeldEntity();
+
+                            if (heldent != null)
+                            {
+                                var projectiles = heldent.GetComponent<BaseProjectile>();
+
+                                if (projectiles != null)
+                                {
+                                    var magazine = item["magazine"] as Dictionary<string, object>;
+                                    var ammotype = int.Parse(magazine.Keys.ToArray()[0]);
+                                    var ammoamount = int.Parse(magazine[ammotype.ToString()].ToString());
+
+                                    if (pasteData.IsItemReplace)
+                                        ammotype = GetItemId(ammotype);
+
+                                    projectiles.primaryMagazine.ammoType = ItemManager.FindItemDefinition(ammotype);
+                                    projectiles.primaryMagazine.contents = ammoamount;
+                                }
+
+                                //TODO Doesn't add water to some containers
+
+                                if (item.ContainsKey("items"))
+                                {
+                                    var itemContainsList = item["items"] as List<object>;
+
+                                    foreach (var itemContains in itemContainsList)
+                                    {
+                                        var contents = itemContains as Dictionary<string, object>;
+
+                                        var contentsItemId = Convert.ToInt32(contents["id"]);
+
+                                        if (pasteData.IsItemReplace)
+                                            contentsItemId = GetItemId(contentsItemId);
+
+                                        i.contents.AddItem(ItemManager.FindItemDefinition(contentsItemId),
+                                            Convert.ToInt32(contents["amount"]));
+                                    }
+                                }
+                            }
+                        }
+
+                        var targetPos = -1;
+
+                        if (item.ContainsKey("position"))
+                            targetPos = Convert.ToInt32(item["position"]);
+
+                        var heldEntity = i.GetHeldEntity();
+                        if (heldEntity != null && heldEntity is Detonator detonator)
+                        {
+                            detonator.frequency = dataInt;
+                            if ( detonator.IsOn() )
+                                RFManager.AddBroadcaster(detonator.frequency, detonator);
+                        }
+                        
+                        i.position = targetPos;
+                        box.inventory.Insert(i);
+                    }
+                }
+            }
+
+            var autoTurret = entity as AutoTurret;
+            if (autoTurret != null)
+            {
+                var authorizedPlayers = new List<ulong>();
+
+                if (data.ContainsKey("autoturret"))
+                {
+#if DEBUG
+                    Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1305");
+#endif
+                    var autoTurretData = data["autoturret"] as Dictionary<string, object>;
+                    authorizedPlayers = (autoTurretData["authorizedPlayers"] as List<object>)
+                        .Select(Convert.ToUInt64).ToList();
+                }
+
+                if (pasteData.BasePlayer != null && !authorizedPlayers.Contains(pasteData.BasePlayer.userID) &&
+                    pasteData.Auth)
+                    authorizedPlayers.Add(pasteData.BasePlayer.userID);
+
+                foreach (var userId in authorizedPlayers)
+                {
+                    autoTurret.authorizedPlayers.Add(new PlayerNameID
+                    {
+                        userid = userId,
+                        username = "Player"
+                    });
+                }
+
+                autoTurret.SendNetworkUpdate();
+            }
+
+            var containerIo = entity as ContainerIOEntity;
+            if (containerIo != null)
+            {
+                if (containerIo.inventory == null)
+                {
+                    containerIo.CreateInventory(true);
+                    containerIo.OnInventoryFirstCreated(containerIo.inventory);
+                }
+                else containerIo.inventory.Clear();
+
+                var items = new List<object>();
+
+                if (data.ContainsKey("items"))
+                    items = data["items"] as List<object>;
+
+                foreach (var itemDef in items)
+                {
+                    var itemJson = itemDef as Dictionary<string, object>;
+                    var itemid = Convert.ToInt32(itemJson["id"]);
+                    var itemamount = Convert.ToInt32(itemJson["amount"]);
+                    var itemskin = ulong.Parse(itemJson["skinid"].ToString());
+                    var itemcondition = Convert.ToSingle(itemJson["condition"]);
+                    var dataInt = 0;
+                    if (itemJson.ContainsKey("dataInt"))
+                    {
+                        dataInt = Convert.ToInt32(itemJson["dataInt"]);
+                    }
+
+                    if (pasteData.IsItemReplace)
+                        itemid = GetItemId(itemid);
+
+                    var item = ItemManager.CreateByItemID(itemid, itemamount, itemskin);
+
+                    if (item != null)
+                    {
+                        item.condition = itemcondition;
+
+                        if (itemJson.ContainsKey("text"))
+                            item.text = itemJson["text"].ToString();
+
+                        if (itemJson.ContainsKey("name"))
+                            item.name = itemJson["name"]?.ToString();
+
+                        if (itemJson.ContainsKey("blueprintTarget"))
+                        {
+                            var blueprintTarget = Convert.ToInt32(itemJson["blueprintTarget"]);
+
+                            if (pasteData.IsItemReplace)
+                                blueprintTarget = GetItemId(blueprintTarget);
+
+                            item.blueprintTarget = blueprintTarget;
+                        }
+
+                        if (dataInt > 0)
+                        {
+                            item.instanceData = new ProtoBuf.Item.InstanceData()
+                            {
+                                ShouldPool = false,
+                                dataInt = dataInt
+                            };
+                        }
+
+                        if (itemJson.ContainsKey("magazine"))
+                        {
+                            var heldent = item.GetHeldEntity();
+
+                            if (heldent != null)
+                            {
+                                var projectiles = heldent.GetComponent<BaseProjectile>();
+
+                                if (projectiles != null)
+                                {
+                                    var magazine = itemJson["magazine"] as Dictionary<string, object>;
+                                    var ammotype = int.Parse(magazine.Keys.ToArray()[0]);
+                                    var ammoamount = int.Parse(magazine[ammotype.ToString()].ToString());
+
+                                    if (pasteData.IsItemReplace)
+                                        ammotype = GetItemId(ammotype);
+
+                                    projectiles.primaryMagazine.ammoType = ItemManager.FindItemDefinition(ammotype);
+                                    projectiles.primaryMagazine.contents = ammoamount;
+                                }
+
+                                //TODO Doesn't add water to some containers
+
+                                if (itemJson.ContainsKey("items"))
+                                {
+                                    var itemContainsList = itemJson["items"] as List<object>;
+
+                                    foreach (var itemContains in itemContainsList)
+                                    {
+                                        var contents = itemContains as Dictionary<string, object>;
+
+                                        var contentsItemId = Convert.ToInt32(contents["id"]);
+
+                                        if (pasteData.IsItemReplace)
+                                            contentsItemId = GetItemId(contentsItemId);
+
+                                        item.contents.AddItem(ItemManager.FindItemDefinition(contentsItemId),
+                                            Convert.ToInt32(contents["amount"]));
+                                    }
+                                }
+                            }
+                        }
+
+                        var targetPos = -1;
+                        if (itemJson.ContainsKey("position"))
+                            targetPos = Convert.ToInt32(itemJson["position"]);
+
+                        item.position = targetPos;
+                        containerIo.inventory.Insert(item);
+                    }
+                }
+
+                if (autoTurret != null)
+                {
+                    autoTurret.Invoke(autoTurret.UpdateAttachedWeapon, 0.5f);
+                }
+
+                containerIo.SendNetworkUpdate();
+            }
+
+            var sign = entity as Signage;
+            if (sign != null && data.ContainsKey("sign"))
+            {
+                var signData = data["sign"] as Dictionary<string, object>;
+
+                if (signData.ContainsKey("amount"))
+                {
+                    int amount;
+                    if (int.TryParse(signData["amount"].ToString(), out amount))
+                    {
+                        for (var num = 0; num < amount; num++)
+                        {
+                            if (signData.ContainsKey($"texture{num}"))
+                            {
+                                var imageBytes = Convert.FromBase64String(signData[$"texture{num}"].ToString());
+
+                                FixSignage(sign, imageBytes, num);
+                            }
+                        }
+                    }
+                }
+                else if (signData.ContainsKey("texture"))
+                {
+                    var imageBytes = Convert.FromBase64String(signData["texture"].ToString());
+
+                    FixSignage(sign, imageBytes, 0);
+                }
+
+                if (Convert.ToBoolean(signData["locked"]))
+                    sign.SetFlag(BaseEntity.Flags.Locked, true);
+
+                sign.SendNetworkUpdate();
+            }
+
+            var lights = entity as AdvancedChristmasLights;
+            if (lights != null)
+            {
+                if (data.ContainsKey("points"))
+                {
+                    var points = data["points"] as List<object>;
+                    if (points != null && points.Count > 0)
+                    {
+                        foreach (Dictionary<string, object> point in points)
+                        {
+                            lights.points.Add(new AdvancedChristmasLights.pointEntry
+                                { normal = (Vector3)point["normal"], point = (Vector3)point["point"] });
+                        }
+                    }
+                }
+
+                if (data.ContainsKey("animationStyle"))
+                {
+                    lights.animationStyle = (AdvancedChristmasLights.AnimationType)data["animationStyle"];
+                }
+            }
+
+            var sleepingBag = entity as SleepingBag;
+            if (sleepingBag != null && data.ContainsKey("sleepingbag"))
+            {
+                var bagData = data["sleepingbag"] as Dictionary<string, object>;
+
+                sleepingBag.niceName = bagData["niceName"].ToString();
+                sleepingBag.deployerUserID = ulong.Parse(bagData["deployerUserID"].ToString());
+                sleepingBag.SetPublic(Convert.ToBoolean(bagData["isPublic"]));
+            }
+
+            var cupboard = entity as BuildingPrivlidge;
+            if (cupboard != null)
+            {
+                var authorizedPlayers = new List<ulong>();
+
+                if (data.ContainsKey("cupboard"))
+                {
+#if DEBUG
+                    Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1521");
+#endif
+                    var cupboardData = data["cupboard"] as Dictionary<string, object>;
+                    authorizedPlayers = (cupboardData["authorizedPlayers"] as List<object>).Select(Convert.ToUInt64)
+                        .ToList();
+                }
+
+                if (pasteData.BasePlayer != null && !authorizedPlayers.Contains(pasteData.BasePlayer.userID) &&
+                    pasteData.Auth)
+                    authorizedPlayers.Add(pasteData.BasePlayer.userID);
+
+                foreach (var userId in authorizedPlayers)
+                {
+                    cupboard.authorizedPlayers.Add(new PlayerNameID
+                    {
+                        userid = userId,
+                        username = "Player"
+                    });
+                }
+
+                cupboard.SendNetworkUpdate();
+            }
+
+            var cctvRc = entity as CCTV_RC;
+            if (cctvRc != null && data.ContainsKey("cctv"))
+            {
+                var cctv = (Dictionary<string, object>)data["cctv"];
+                cctvRc.yawAmount = Convert.ToSingle(cctv["yaw"]);
+                cctvRc.pitchAmount = Convert.ToSingle(cctv["pitch"]);
+                cctvRc.rcIdentifier = cctv["rcIdentifier"].ToString();
+                cctvRc.SendNetworkUpdate();
+            }
+
+            var vendingMachine = entity as VendingMachine;
+            if (vendingMachine != null && data.ContainsKey("vendingmachine"))
+            {
+                var vendingData = data["vendingmachine"] as Dictionary<string, object>;
+
+                vendingMachine.shopName = vendingData["shopName"].ToString();
+                vendingMachine.SetFlag(BaseEntity.Flags.Reserved4,
+                    Convert.ToBoolean(vendingData["isBroadcasting"]));
+
+                var sellOrders = vendingData["sellOrders"] as List<object>;
+
+                foreach (var orderPreInfo in sellOrders)
+                {
+                    var orderInfo = orderPreInfo as Dictionary<string, object>;
+
+                    if (!orderInfo.ContainsKey("inStock"))
+                    {
+                        orderInfo["inStock"] = 0;
+                        orderInfo["currencyIsBP"] = false;
+                        orderInfo["itemToSellIsBP"] = false;
+                    }
+
+                    int itemToSellId = Convert.ToInt32(orderInfo["itemToSellID"]),
+                        currencyId = Convert.ToInt32(orderInfo["currencyID"]);
+
+                    if (pasteData.IsItemReplace)
+                    {
+                        itemToSellId = GetItemId(itemToSellId);
+                        currencyId = GetItemId(currencyId);
+                    }
+
+                    vendingMachine.sellOrders.sellOrders.Add(new ProtoBuf.VendingMachine.SellOrder
+                    {
+                        ShouldPool = false,
+                        itemToSellID = itemToSellId,
+                        itemToSellAmount = Convert.ToInt32(orderInfo["itemToSellAmount"]),
+                        currencyID = currencyId,
+                        currencyAmountPerItem = Convert.ToInt32(orderInfo["currencyAmountPerItem"]),
+                        inStock = Convert.ToInt32(orderInfo["inStock"]),
+                        currencyIsBP = Convert.ToBoolean(orderInfo["currencyIsBP"]),
+                        itemToSellIsBP = Convert.ToBoolean(orderInfo["itemToSellIsBP"])
+                    });
+                }
+
+                vendingMachine.FullUpdate();
+            }
+
+            var ioEntity = entity as IOEntity;
+
+            if (ioEntity != null)
+            {
+                var ioData = new Dictionary<string, object>();
+
+                if (data.ContainsKey("IOEntity"))
+                {
+                    ioData = data["IOEntity"] as Dictionary<string, object> ?? new Dictionary<string, object>();
+                }
+
+                ioData.Add("entity", ioEntity);
+                ioData.Add("newId", ioEntity.net.ID.Value);
+
+                object oldIdObject;
+                if (ioData.TryGetValue("oldID", out oldIdObject))
+                {
+#if DEBUG
+                    Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1619");
+#endif
+                    var oldId = Convert.ToUInt64(oldIdObject);
+                    pasteData.IoEntities.Add(oldId, ioData);
+                }
+            }
+
+            var flagsData = new Dictionary<string, object>();
+
+            if (data.ContainsKey("flags"))
+                flagsData = data["flags"] as Dictionary<string, object>;
+
+            var flags = new Dictionary<BaseEntity.Flags, bool>();
+
+            foreach (var flagData in flagsData)
+            {
+                BaseEntity.Flags baseFlag;
+                if (Enum.TryParse(flagData.Key, out baseFlag))
+                    flags.Add(baseFlag, Convert.ToBoolean(flagData.Value));
+            }
+
+            foreach (var flag in flags)
+            {
+                entity.SetFlag(flag.Key, flag.Value);
+            }
+
+            pasteData.PastedEntities.Add(entity);
+            pasteData.CallbackSpawned?.Invoke(entity);
+        }
+
+        private void ProgressIOEntity(Dictionary<string, object> ioData, PasteData pasteData)
+        {
+            if (!ioData.ContainsKey("entity"))
+                return;
+
+
+            var ioEntity = ioData["entity"] as IOEntity;
+
+            List<object> inputs = null;
+            if (ioData.ContainsKey("inputs"))
+                inputs = ioData["inputs"] as List<object>;
+
+            var electricalBranch = ioEntity as ElectricalBranch;
+            if (electricalBranch != null && ioData.ContainsKey("branchAmount"))
+            {
+                electricalBranch.branchAmount = Convert.ToInt32(ioData["branchAmount"]);
+            }
+
+            var counter = ioEntity as PowerCounter;
+            if (counter != null)
+            {
+                if (ioData.ContainsKey("targetNumber"))
+                    counter.targetCounterNumber = Convert.ToInt32(ioData["targetNumber"]);
+
+                object counterNumber;
+                counter.SetCounterNumber(ioData.TryGetValue("counterNumber", out counterNumber) ?
+                    Convert.ToInt32(counterNumber) :
+                    0);
+            }
+
+            var timerSwitch = ioEntity as TimerSwitch;
+            if (timerSwitch != null && ioData.ContainsKey("timerLength"))
+            {
+                timerSwitch.timerLength = Convert.ToSingle(ioData["timerLength"]);
+            }
+
+            var rfBroadcaster = ioEntity as RFBroadcaster;
+            if (rfBroadcaster != null && ioData.ContainsKey("frequency"))
+            {
+                int newFrequency = Convert.ToInt32(ioData["frequency"]);
+                if (ioEntity.IsPowered())
+                    RFManager.AddBroadcaster(newFrequency, rfBroadcaster);
+                rfBroadcaster.frequency = newFrequency;
+                rfBroadcaster.MarkDirty();
+            }
+
+            var rfReceiver = ioEntity as RFReceiver;
+            if (rfReceiver != null && ioData.ContainsKey("frequency"))
+            {
+                int newFrequency = Convert.ToInt32(ioData["frequency"]);
+                RFManager.AddListener(newFrequency, rfReceiver);
+                rfReceiver.frequency = newFrequency;
+                rfReceiver.MarkDirty();
+            }
+
+            var doorManipulator = ioEntity as CustomDoorManipulator;
+            if (doorManipulator != null)
+            {
+                var door = doorManipulator.FindDoor();
+                doorManipulator.SetTargetDoor(door);
+            }
+
+            if (inputs != null && inputs.Count > 0)
+            {
+                for (var index = 0; index < inputs.Count; index++)
+                {
+                    var input = inputs[index] as Dictionary<string, object>;
+                    object oldIdObject;
+                    if (!input.TryGetValue("connectedID", out oldIdObject))
+                        continue;
+
+    #if DEBUG
+                    Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1712");
+    #endif
+                    var oldId = Convert.ToUInt64(oldIdObject);
+
+                    if (oldId != 0 && pasteData.IoEntities.ContainsKey(oldId))
+                    {
+                        if (ioEntity.inputs[index] == null)
+                            ioEntity.inputs[index] = new IOEntity.IOSlot();
+
+                        var ioConnection = pasteData.IoEntities[oldId];
+                        if (ioConnection.ContainsKey("newId"))
+                        {
+    #if DEBUG
+            Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1719");
+    #endif
+                            ioEntity.inputs[index].connectedTo.entityRef.uid =
+                                new NetworkableId(Convert.ToUInt64(ioConnection["newId"]));
+                        }
+                    }
+                }
+            }
+
+            List<object> outputs = null;
+            if (ioData.ContainsKey("outputs"))
+                outputs = ioData["outputs"] as List<object>;
+
+            if (outputs != null && outputs.Count > 0)
+            {
+                for (var index = 0; index < outputs.Count; index++)
+                {
+                    var output = outputs[index] as Dictionary<string, object>;
+    #if DEBUG
+                    Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1744");
+    #endif
+                    var oldId = Convert.ToUInt64(output["connectedID"]);
+
+                    if (oldId != 0 && pasteData.IoEntities.ContainsKey(oldId))
+                    {
+                        if (ioEntity.outputs[index] == null)
+                            ioEntity.outputs[index] = new IOEntity.IOSlot();
+
+                        var ioConnection = pasteData.IoEntities[oldId];
+
+                        if (ioConnection.ContainsKey("newId"))
+                        {
+                            var ioEntity2 = ioConnection["entity"] as IOEntity;
+                            var connectedToSlot = Convert.ToInt32(output["connectedToSlot"]);
+                            var ioOutput = ioEntity.outputs[index];
+
+                            ioOutput.connectedTo = new IOEntity.IORef();
+                            ioOutput.connectedTo.Set(ioEntity2);
+                            ioOutput.connectedToSlot = connectedToSlot;
+                            ioOutput.connectedTo.Init();
+
+                            ioEntity2.inputs[connectedToSlot].connectedTo = new IOEntity.IORef();
+                            ioEntity2.inputs[connectedToSlot].connectedTo.Set(ioEntity);
+                            ioEntity2.inputs[connectedToSlot].connectedToSlot = index;
+                            ioEntity2.inputs[connectedToSlot].connectedTo.Init();
+
+                            ioOutput.niceName = output["niceName"] as string;
+
+                            object wireColour;
+                            if (output.TryGetValue("wireColour", out wireColour))
+                                ioOutput.wireColour = (WireTool.WireColour)Convert.ToInt32(wireColour);
+
+                            ioOutput.type = (IOEntity.IOType)Convert.ToInt32(output["type"]);
+                        }
+
+                        if (output.ContainsKey("linePoints"))
+                        {
+                            var linePoints = output["linePoints"] as List<object>;
+                            if (linePoints != null)
+                            {
+                                var lineList = new List<Vector3>();
+                                foreach (var point in linePoints)
+                                {
+                                    var linePoint = point as Dictionary<string, object>;
+                                    lineList.Add(new Vector3(
+                                        Convert.ToSingle(linePoint["x"]),
+                                        Convert.ToSingle(linePoint["y"]),
+                                        Convert.ToSingle(linePoint["z"])));
+                                }
+
+                                ioEntity.outputs[index].linePoints = lineList.ToArray();
+                            }
+                        }
+                    }
+                }
+            }
+
+            ioEntity.MarkDirtyForceUpdateOutputs();
+            ioEntity.SendNetworkUpdate();
+        }
+        
         private HashSet<Dictionary<string, object>> PreLoadData(List<object> entities, Vector3 startPos,
             float rotationCorrection, bool deployables, bool inventories, bool auth, bool vending)
         {
