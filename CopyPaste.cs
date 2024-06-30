@@ -1728,13 +1728,20 @@ namespace Oxide.Plugins
                     var rfBroadcaster = ioEntity as RFBroadcaster;
                     if (rfBroadcaster != null && ioData.ContainsKey("frequency"))
                     {
-                        rfBroadcaster.frequency = Convert.ToInt32(ioData["frequency"]);
+                        int newFrequency = Convert.ToInt32(ioData["frequency"]);
+                        if (ioEntity.IsPowered())
+                            RFManager.AddBroadcaster(newFrequency, rfBroadcaster);
+                        rfBroadcaster.frequency = newFrequency;
+                        rfBroadcaster.MarkDirty();
                     }
 
                     var rfReceiver = ioEntity as RFReceiver;
                     if (rfReceiver != null && ioData.ContainsKey("frequency"))
                     {
-                        rfReceiver.frequency = Convert.ToInt32(ioData["frequency"]);
+                        int newFrequency = Convert.ToInt32(ioData["frequency"]);
+                        RFManager.AddListener(newFrequency, rfReceiver);
+                        rfReceiver.frequency = newFrequency;
+                        rfReceiver.MarkDirty();
                     }
 
                     var doorManipulator = ioEntity as CustomDoorManipulator;
