@@ -926,7 +926,9 @@ namespace Oxide.Plugins
                         { "niceName", output.niceName },
                         { "wireColour", output.wireColour },
                         { "type", (int)output.type },
-                        { "linePoints", output.linePoints?.ToList() ?? new List<Vector3>() }
+                        { "linePoints", output.linePoints?.ToList() ?? new List<Vector3>() },
+                        { "lineAnchors", output.lineAnchors != null ? GetLineAnchors(output.lineAnchors, ioEntity) : new List<object>() },
+                        { "slackLevels", output.slackLevels?.ToList() ?? new List<float>() },
                     };
 
                     outputs.Add(ioConnection);
@@ -963,6 +965,29 @@ namespace Oxide.Plugins
             }
 
             return data;
+        }
+        
+        private List<object> GetLineAnchors(IOEntity.LineAnchor[] lineAnchors, IOEntity ioEntity)
+        {
+            var anchors = new List<object>();
+            foreach (var anchor in lineAnchors)
+            {
+                anchors.Add(new Dictionary<string, object>
+                {
+                    { "position", new Dictionary<string, object>
+                        {
+                            { "x", anchor.position.x },
+                            { "y", anchor.position.y },
+                            { "z", anchor.position.z }
+                        }
+                    },
+                    { "index", anchor.index },
+                    { "boneName", anchor.boneName },
+                    { "selfRef", anchor.entityRef.uid == ioEntity.parentEntity.uid }
+                });
+            }
+
+            return anchors;
         }
 
         private object FindBestHeight(HashSet<Dictionary<string, object>> entities, Vector3 startPos)
@@ -1960,39 +1985,86 @@ namespace Oxide.Plugins
                             ioOutput.connectedTo = new IOEntity.IORef();
                             ioOutput.connectedTo.Set(ioEntity2);
                             ioOutput.connectedToSlot = connectedToSlot;
-                            ioOutput.connectedTo.Init();
+                            ioOutput.type = (IOEntity.IOType)Convert.ToInt32(output["type"]);
+                            
+                            if( output.ContainsKey( "linePoints" ) )
+                            {
+                                var linePoints = output["linePoints"] as List<object>;
 
-                            ioEntity2.inputs[connectedToSlot].connectedTo = new IOEntity.IORef();
-                            ioEntity2.inputs[connectedToSlot].connectedTo.Set(ioEntity);
-                            ioEntity2.inputs[connectedToSlot].connectedToSlot = index;
-                            ioEntity2.inputs[connectedToSlot].connectedTo.Init();
+                                if( linePoints != null )
+                                {
+                                    var lineList = Pool.GetList<Vector3>();
+                                    foreach( var point in linePoints )
+                                    {
+                                        var linePoint = point as Dictionary<string, object>;
+                                        lineList.Add( new Vector3(
+                                            Convert.ToSingle( linePoint["x"] ),
+                                            Convert.ToSingle( linePoint["y"] ),
+                                            Convert.ToSingle( linePoint["z"] ) ) );
+                                    }
 
-                            ioOutput.niceName = output["niceName"] as string;
+                                    ioOutput.linePoints = lineList.ToArray();
+                                    
+                                    Pool.FreeList( ref lineList );
+                                }
+                            }
+                            
+                            if (output.ContainsKey("slackLevels"))
+                            {
+                                var slackLevels = output["slackLevels"] as List<object>;
 
+                                if (slackLevels != null)
+                                {
+                                    var slackList = Pool.GetList<float>();
+                                    
+                                    foreach (var slack in slackLevels)
+                                    {
+                                        slackList.Add(Convert.ToSingle(slack));
+                                    }
+
+                                    ioOutput.slackLevels = slackList.ToArray();
+                                     
+                                    Pool.FreeList(ref slackList);
+                                }
+                            }
+
+                            if (output.ContainsKey("lineAnchors"))
+                            {
+                                var lineAnchors = output["lineAnchors"] as List<object>;
+                                if (lineAnchors != null)
+                                {
+                                    var anchorList = Pool.GetList<IOEntity.LineAnchor>();
+                                    foreach (var anchor in lineAnchors)
+                                    {
+                                        var lineAnchor = anchor as Dictionary<string, object>;
+                                        var pos = (Dictionary<string, object>)lineAnchor["position"];
+                                        
+                                        anchorList.Add(new IOEntity.LineAnchor
+                                        {
+                                            entityRef = new EntityRef<Door>(Convert.ToBoolean(lineAnchor["selfRef"]) ? ioEntity.parentEntity.uid : ioEntity2.parentEntity.uid),
+                                            position = new Vector3(Convert.ToSingle(pos["x"]), Convert.ToSingle(pos["y"]),
+                                                Convert.ToSingle(pos["z"])),
+                                            index = Convert.ToInt32(lineAnchor["index"]),
+                                            boneName = lineAnchor["boneName"] as string
+                                        });
+                                    }
+                        
+                                    ioEntity.outputs[index].lineAnchors = anchorList.ToArray();
+                                    
+                                    Pool.FreeList(ref anchorList);
+                                }
+                            }
+                            
                             object wireColour;
                             if (output.TryGetValue("wireColour", out wireColour))
                                 ioOutput.wireColour = (WireTool.WireColour)Convert.ToInt32(wireColour);
 
-                            ioOutput.type = (IOEntity.IOType)Convert.ToInt32(output["type"]);
-                        }
+                            ioOutput.connectedTo.Init();
+                            ioEntity.MarkDirtyForceUpdateOutputs();
+                            ioEntity.SendNetworkUpdate();
+                            ioEntity2.SendNetworkUpdate();
 
-                        if (output.ContainsKey("linePoints"))
-                        {
-                            var linePoints = output["linePoints"] as List<object>;
-                            if (linePoints != null)
-                            {
-                                var lineList = new List<Vector3>();
-                                foreach (var point in linePoints)
-                                {
-                                    var linePoint = point as Dictionary<string, object>;
-                                    lineList.Add(new Vector3(
-                                        Convert.ToSingle(linePoint["x"]),
-                                        Convert.ToSingle(linePoint["y"]),
-                                        Convert.ToSingle(linePoint["z"])));
-                                }
-
-                                ioEntity.outputs[index].linePoints = lineList.ToArray();
-                            }
+                            ioOutput.niceName = output["niceName"] as string;
                         }
                     }
                 }
