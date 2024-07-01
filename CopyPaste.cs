@@ -1114,7 +1114,7 @@ namespace Oxide.Plugins
 
         private PasteData Paste(ICollection<Dictionary<string, object>> entities, Dictionary<string, object> protocol,
             bool ownership, Vector3 startPos, IPlayer player, bool stability, float rotationCorrection,
-            float heightAdj, bool auth, Action callback, Action<BaseEntity> callbackSpawned, string filename, bool checkPlaced)
+            float heightAdj, bool auth, Action callback, Action<BaseEntity> callbackSpawned, string filename, bool checkPlaced, bool enableSaving = true)
         {
             //Settings
 
@@ -1147,6 +1147,7 @@ namespace Oxide.Plugins
                 Filename = filename,
                 CheckPlaced = checkPlaced,
                 Version = vNumber,
+                EnableSaving = enableSaving
             };
 
             NextTick(() => PasteLoop(pasteData));
@@ -1314,6 +1315,11 @@ namespace Oxide.Plugins
             }
 
             entity.skinID = skinid;
+
+            if (!pasteData.EnableSaving)
+            {
+                entity.enableSaving = false;
+            }
 
             entity.Spawn();
             
@@ -2342,7 +2348,7 @@ namespace Oxide.Plugins
                 vending = _config.Paste.VendingMachines,
                 stability = _config.Paste.Stability,
                 ownership = _config.Paste.EntityOwner,
-                checkPlaced = true;
+                checkPlaced = true, enableSaving = true;
 
             for (var i = 0;; i += 2)
             {
@@ -2437,6 +2443,12 @@ namespace Oxide.Plugins
 
                         break;
 
+                    case "enablesaving":
+                        if (!bool.TryParse(args[valueIndex], out enableSaving))
+                            return new(Lang("SYNTAX_BOOL", userId, param), null);
+
+                        break;
+
                     default:
                         return new ValueTuple<object, PasteData>(Lang("SYNTAX_PASTE_OR_PASTEBACK", userId), null);
                 }
@@ -2479,7 +2491,7 @@ namespace Oxide.Plugins
                 protocol = data["protocol"] as Dictionary<string, object>;
 
             var pasteData = Paste(preloadData, protocol, ownership, startPos, player, stability, rotationCorrection,
-                autoHeight ? heightAdj : 0, auth, callback, callbackSpawned, filename, checkPlaced);
+                autoHeight ? heightAdj : 0, auth, callback, callbackSpawned, filename, checkPlaced, enableSaving);
 
             return new ValueTuple<object, PasteData>(true, pasteData);
         }
@@ -2574,6 +2586,12 @@ namespace Oxide.Plugins
                 slotEntity.gameObject.Identity();
                 slotEntity.SetParent(ent, slotName);
                 slotEntity.OnDeployed(ent, null, _emptyItem);
+
+                if (!pasteData.EnableSaving)
+                {
+                    slotEntity.enableSaving = false;
+                }
+
                 slotEntity.Spawn();
 
                 ent.SetSlot(slot, slotEntity);
@@ -3425,6 +3443,7 @@ namespace Oxide.Plugins
             public bool IsItemReplace;
             public bool Ownership;
             public bool CheckPlaced = true;
+            public bool EnableSaving = true;
 
             public bool Cancelled = false;
 
