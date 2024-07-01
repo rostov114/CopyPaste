@@ -584,7 +584,10 @@ namespace Oxide.Plugins
 
             if (entity.HasParent())
             {
-                data.Add("parentbone", StringPool.Get(entity.parentBone));
+                if (entity.parentBone != 0)
+                {
+                    data.Add("parentbone", StringPool.Get(entity.parentBone));
+                }
 
                 if (GetSlot(entity.GetParentEntity(), entity, out BaseEntity.Slot? theslot) && theslot != null)
                 {
@@ -976,9 +979,9 @@ namespace Oxide.Plugins
                 {
                     { "position", new Dictionary<string, object>
                         {
-                            { "x", anchor.position.x },
-                            { "y", anchor.position.y },
-                            { "z", anchor.position.z }
+                            { "x", anchor.position.x.ToString() },
+                            { "y", anchor.position.y.ToString() },
+                            { "z", anchor.position.z.ToString() }
                         }
                     },
                     { "index", anchor.index },
@@ -1862,7 +1865,6 @@ namespace Oxide.Plugins
             if (!ioData.ContainsKey("entity"))
                 return;
 
-
             var ioEntity = ioData["entity"] as IOEntity;
 
             List<object> inputs = null;
@@ -1976,95 +1978,78 @@ namespace Oxide.Plugins
 
                         var ioConnection = pasteData.IoEntities[oldId];
 
-                        if (ioConnection.ContainsKey("newId"))
+                        if( ioConnection.ContainsKey( "newId" ) )
                         {
-                            var ioEntity2 = ioConnection["entity"] as IOEntity;
-                            var connectedToSlot = Convert.ToInt32(output["connectedToSlot"]);
                             var ioOutput = ioEntity.outputs[index];
-                            
+                            var ioEntity2 = ioConnection["entity"] as IOEntity;
+                            var connectedToSlot = Convert.ToInt32( output["connectedToSlot"] );
+                            var ioInput = ioEntity2.inputs[connectedToSlot];
+
                             ioOutput.connectedTo = new IOEntity.IORef();
-                            ioOutput.connectedTo.Set(ioEntity2);
+                            ioOutput.connectedTo.Set( ioEntity2 );
                             ioOutput.connectedToSlot = connectedToSlot;
-                            ioOutput.type = (IOEntity.IOType)Convert.ToInt32(output["type"]);
-                            
-                            if( output.ContainsKey( "linePoints" ) )
-                            {
-                                var linePoints = output["linePoints"] as List<object>;
-
-                                if( linePoints != null )
-                                {
-                                    var lineList = Pool.GetList<Vector3>();
-                                    foreach( var point in linePoints )
-                                    {
-                                        var linePoint = point as Dictionary<string, object>;
-                                        lineList.Add( new Vector3(
-                                            Convert.ToSingle( linePoint["x"] ),
-                                            Convert.ToSingle( linePoint["y"] ),
-                                            Convert.ToSingle( linePoint["z"] ) ) );
-                                    }
-
-                                    ioOutput.linePoints = lineList.ToArray();
-                                    
-                                    Pool.FreeList( ref lineList );
-                                }
-                            }
-                            
-                            if (output.ContainsKey("slackLevels"))
-                            {
-                                var slackLevels = output["slackLevels"] as List<object>;
-
-                                if (slackLevels != null)
-                                {
-                                    var slackList = Pool.GetList<float>();
-                                    
-                                    foreach (var slack in slackLevels)
-                                    {
-                                        slackList.Add(Convert.ToSingle(slack));
-                                    }
-
-                                    ioOutput.slackLevels = slackList.ToArray();
-                                     
-                                    Pool.FreeList(ref slackList);
-                                }
-                            }
-
-                            if (output.ContainsKey("lineAnchors"))
-                            {
-                                var lineAnchors = output["lineAnchors"] as List<object>;
-                                if (lineAnchors != null)
-                                {
-                                    var anchorList = Pool.GetList<IOEntity.LineAnchor>();
-                                    foreach (var anchor in lineAnchors)
-                                    {
-                                        var lineAnchor = anchor as Dictionary<string, object>;
-                                        var pos = (Dictionary<string, object>)lineAnchor["position"];
-                                        
-                                        anchorList.Add(new IOEntity.LineAnchor
-                                        {
-                                            entityRef = new EntityRef<Door>(Convert.ToBoolean(lineAnchor["selfRef"]) ? ioEntity.parentEntity.uid : ioEntity2.parentEntity.uid),
-                                            position = new Vector3(Convert.ToSingle(pos["x"]), Convert.ToSingle(pos["y"]),
-                                                Convert.ToSingle(pos["z"])),
-                                            index = Convert.ToInt32(lineAnchor["index"]),
-                                            boneName = lineAnchor["boneName"] as string
-                                        });
-                                    }
-                        
-                                    ioEntity.outputs[index].lineAnchors = anchorList.ToArray();
-                                    
-                                    Pool.FreeList(ref anchorList);
-                                }
-                            }
-                            
-                            object wireColour;
-                            if (output.TryGetValue("wireColour", out wireColour))
-                                ioOutput.wireColour = (WireTool.WireColour)Convert.ToInt32(wireColour);
-
-                            ioOutput.connectedTo.Init();
-                            ioEntity.MarkDirtyForceUpdateOutputs();
-                            ioEntity.SendNetworkUpdate();
-                            ioEntity2.SendNetworkUpdate();
-
+                            ioOutput.type = (IOEntity.IOType) Convert.ToInt32( output["type"] );
                             ioOutput.niceName = output["niceName"] as string;
+                            ioOutput.connectedTo.Init();
+
+                            ioInput.connectedTo = new IOEntity.IORef();
+                            ioInput.connectedTo.Set( ioEntity );
+                            ioInput.connectedToSlot = index;
+                            ioInput.connectedTo.Init();
+
+                            ioOutput.worldSpaceLineEndRotation =
+                                ioEntity2.transform.TransformDirection( ioInput.handleDirection );
+                            ioOutput.originPosition = ioEntity.transform.position;
+                            ioOutput.originRotation = ioEntity.transform.rotation.eulerAngles;
+
+                            if( output.TryGetValue( "wireColour", out var wireColour ) )
+                            {
+                                var color = (WireTool.WireColour) Convert.ToInt32( wireColour );
+                                ioInput.wireColour = color;
+                                ioOutput.wireColour = color;
+                            }
+
+                            if (output.ContainsKey( "linePoints" ) && output["linePoints"] is List<object> linePoints)
+                            {
+                                ioOutput.linePoints = new Vector3[linePoints.Count];
+                                for( var i = 0; i < linePoints.Count; i++ )
+                                {
+                                    var linePoint = linePoints[i] as Dictionary<string, object>;
+                                    ioOutput.linePoints[i] = new Vector3(
+                                        Convert.ToSingle( linePoint["x"] ),
+                                        Convert.ToSingle( linePoint["y"] ),
+                                        Convert.ToSingle( linePoint["z"] ) );
+                                }
+                            }
+                            
+                            if (output.ContainsKey("slackLevels") && output["slackLevels"] is List<object> slackLevels)
+                            {
+                                ioOutput.slackLevels = new float[slackLevels.Count];
+                                for (var i = 0; i < slackLevels.Count; i++)
+                                {
+                                    ioOutput.slackLevels[i] = Convert.ToSingle(slackLevels[i]);
+                                }
+                            }
+
+                            if (output.ContainsKey("lineAnchors") && output["lineAnchors"] is List<object> lineAnchors)
+                            {
+                                ioOutput.lineAnchors = new IOEntity.LineAnchor[lineAnchors.Count];
+                                for (var i = 0; i < lineAnchors.Count; i++)
+                                {
+                                    var lineAnchor = lineAnchors[i] as Dictionary<string, object>;
+                                    var pos = (Dictionary<string, object>)lineAnchor["position"];
+                                    ioOutput.lineAnchors[i] = new IOEntity.LineAnchor
+                                    {
+                                        entityRef = new EntityRef<Door>(Convert.ToBoolean(lineAnchor["selfRef"]) ? ioEntity.parentEntity.uid : ioEntity2.parentEntity.uid),
+                                        position = new Vector3(Convert.ToSingle(pos["x"]), Convert.ToSingle(pos["y"]),
+                                            Convert.ToSingle(pos["z"])),
+                                        index = Convert.ToInt32(lineAnchor["index"]),
+                                        boneName = lineAnchor["boneName"] as string
+                                    };
+                                }
+                            }
+
+                            ioEntity2.SendNetworkUpdate();
                         }
                     }
                 }
