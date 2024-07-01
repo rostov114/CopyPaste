@@ -1822,6 +1822,17 @@ namespace Oxide.Plugins
                     pasteData.IoEntities.Add(oldId, ioData);
                 }
             }
+            
+            if (entity is ElectricFurnaceIO electricFurnaceIO)
+            {
+                if (electricFurnaceIO.GetParentEntity() is ElectricOven oven)
+                {
+                    if( oven.spawnedIo.IsValid(true) )
+                        oven.spawnedIo.Get(true).Kill();
+                    
+                    oven.spawnedIo.Set( ioEntity );
+                }
+            }
 
             var flagsData = new Dictionary<string, object>();
 
