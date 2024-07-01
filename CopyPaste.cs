@@ -967,6 +967,11 @@ namespace Oxide.Plugins
                 data.Add("IOEntity", ioData);
             }
 
+            if (entity is StorageContainer || entity is Door)
+            {
+                data.Add("oldID", entity.net.ID.Value);
+            }
+
             return data;
         }
         
@@ -986,7 +991,7 @@ namespace Oxide.Plugins
                     },
                     { "index", anchor.index },
                     { "boneName", anchor.boneName },
-                    { "selfRef", anchor.entityRef.uid == ioEntity.parentEntity.uid }
+                    { "entityRefID", anchor.entityRef.uid.Value }
                 });
             }
 
@@ -1173,7 +1178,7 @@ namespace Oxide.Plugins
                 NextTick(() => PasteLoop(pasteData));
             else
             {
-                foreach (var ioData in pasteData.IoEntities.Values.ToArray())
+                foreach (var ioData in pasteData.EntityLookup.Values.ToArray())
                 {
                     ProgressIOEntity(ioData, pasteData);
                 }
@@ -1298,6 +1303,14 @@ namespace Oxide.Plugins
                     stabilityEntity.grounded = true;
                     pasteData.StabilityEntities.Add(stabilityEntity);
                 }
+            }
+
+            if (data.TryGetValue("oldID", out var oldID))
+            {
+                pasteData.EntityLookup.Add(Convert.ToUInt64(oldID), new Dictionary<string, object>
+                {
+                    { "entity", entity }
+                });
             }
 
             entity.skinID = skinid;
@@ -1819,7 +1832,7 @@ namespace Oxide.Plugins
                     Puts($"{nameof(PasteLoop)}: Convert.ToUInt64 1619");
 #endif
                     var oldId = Convert.ToUInt64(oldIdObject);
-                    pasteData.IoEntities.Add(oldId, ioData);
+                    pasteData.EntityLookup.Add(oldId, ioData);
                 }
             }
             
@@ -1880,6 +1893,9 @@ namespace Oxide.Plugins
                 return;
 
             var ioEntity = ioData["entity"] as IOEntity;
+
+            if (ioEntity == null)
+                return;
 
             List<object> inputs = null;
             if (ioData.ContainsKey("inputs"))
@@ -1953,12 +1969,12 @@ namespace Oxide.Plugins
 #endif
                     var oldId = Convert.ToUInt64(oldIdObject);
 
-                    if (oldId != 0 && pasteData.IoEntities.ContainsKey(oldId))
+                    if (oldId != 0 && pasteData.EntityLookup.ContainsKey(oldId))
                     {
                         if (ioEntity.inputs[index] == null)
                             ioEntity.inputs[index] = new IOEntity.IOSlot();
 
-                        var ioConnection = pasteData.IoEntities[oldId];
+                        var ioConnection = pasteData.EntityLookup[oldId];
                         if (ioConnection.ContainsKey("newId"))
                         {
 #if DEBUG
@@ -1985,12 +2001,12 @@ namespace Oxide.Plugins
 #endif
                     var oldId = Convert.ToUInt64(output["connectedID"]);
 
-                    if (oldId != 0 && pasteData.IoEntities.ContainsKey(oldId))
+                    if (oldId != 0 && pasteData.EntityLookup.ContainsKey(oldId))
                     {
                         if (ioEntity.outputs[index] == null)
                             ioEntity.outputs[index] = new IOEntity.IOSlot();
 
-                        var ioConnection = pasteData.IoEntities[oldId];
+                        var ioConnection = pasteData.EntityLookup[oldId];
 
                         if( ioConnection.ContainsKey( "newId" ) )
                         {
@@ -2052,14 +2068,22 @@ namespace Oxide.Plugins
                                 {
                                     var lineAnchor = lineAnchors[i] as Dictionary<string, object>;
                                     var pos = (Dictionary<string, object>)lineAnchor["position"];
-                                    ioOutput.lineAnchors[i] = new IOEntity.LineAnchor
+
+                                    if (pasteData.EntityLookup.TryGetValue(Convert.ToUInt64(lineAnchor["entityRefID"]), out var data))
                                     {
-                                        entityRef = new EntityRef<Door>(Convert.ToBoolean(lineAnchor["selfRef"]) ? ioEntity.parentEntity.uid : ioEntity2.parentEntity.uid),
-                                        position = new Vector3(Convert.ToSingle(pos["x"]), Convert.ToSingle(pos["y"]),
-                                            Convert.ToSingle(pos["z"])),
-                                        index = Convert.ToInt32(lineAnchor["index"]),
-                                        boneName = lineAnchor["boneName"] as string
-                                    };
+                                        var door = data["entity"] as Door;
+                                        if (door != null)
+                                        {
+                                            ioOutput.lineAnchors[i] = new IOEntity.LineAnchor
+                                            {
+                                                entityRef = new EntityRef<Door>(door.net.ID),
+                                                position = new Vector3(Convert.ToSingle(pos["x"]), Convert.ToSingle(pos["y"]),
+                                                    Convert.ToSingle(pos["z"])),
+                                                index = Convert.ToInt32(lineAnchor["index"]),
+                                                boneName = lineAnchor["boneName"] as string
+                                            };                                            
+                                        }
+                                    }
                                 }
                             }
 
@@ -3384,7 +3408,7 @@ namespace Oxide.Plugins
             public List<BaseEntity> PastedEntities = new List<BaseEntity>();
             public string Filename;
 
-            public Dictionary<ulong, Dictionary<string, object>> IoEntities =
+            public Dictionary<ulong, Dictionary<string, object>> EntityLookup =
                 new Dictionary<ulong, Dictionary<string, object>>();
 
             public IPlayer Player;
