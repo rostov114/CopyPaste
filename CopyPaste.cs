@@ -1203,7 +1203,7 @@ namespace Oxide.Plugins
 
         private void PasteEntity(Dictionary<string, object> data, PasteData pasteData, BaseEntity parent = null)
         {
-            bool isChild = parent != null && data.ContainsKey( "parentbone" );
+            bool isChild = parent != null;
             
             var prefabname = (string)data["prefabname"];
 #if DEBUG
@@ -1244,7 +1244,10 @@ namespace Oxide.Plugins
             if (isChild)
             {
                 entity.gameObject.Identity();
-                entity.SetParent(parent, data["parentbone"].ToString());
+                if( data.ContainsKey( "parentbone" ) )
+                    entity.SetParent(parent, data["parentbone"].ToString());
+                else
+                    entity.SetParent(parent);
                 
                 // Custom door controller doesn't have null checks for deployedBy baseplayer
                 if(entity is not CustomDoorManipulator)
