@@ -33,7 +33,7 @@ using Graphics = System.Drawing.Graphics;
 
 namespace Oxide.Plugins
 {
-    [Info("Copy Paste", "misticos", "4.4.0")]
+    [Info("Copy Paste", "misticos", "4.2.0")]
     [Description("Copy and paste buildings to save them or move them")]
     public class CopyPaste : CovalencePlugin
     {
@@ -1244,7 +1244,7 @@ namespace Oxide.Plugins
                 return;
 
             // Used to copy locks for no reason in previous versions (is included in the slots info so no need to copy locks) so just skipping them.
-            if (prefabname.Contains("locks") && pasteData.Version < new VersionNumber(4, 4, 0))
+            if (prefabname.Contains("locks") && pasteData.Version < new VersionNumber(4, 2, 0))
                 return;
 
             BaseEntity entity = null;
