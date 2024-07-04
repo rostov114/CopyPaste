@@ -1225,6 +1225,8 @@ namespace Oxide.Plugins
             var skinid = ulong.Parse(data["skinid"].ToString());
             var pos = isChild ? Vector3.zero : (Vector3)data["position"];
             var rot = isChild ? Quaternion.identity : (Quaternion)data["rotation"];
+            var localPos = isChild ? (Vector3)data["position"] : Vector3.zero;
+            var localRot = isChild ? (Quaternion)data["rotation"] : Quaternion.identity;
                 
             var ownerId = pasteData.BasePlayer?.userID ?? 0;
             if (data.ContainsKey("ownerid"))
@@ -1245,7 +1247,23 @@ namespace Oxide.Plugins
             if (prefabname.Contains("locks") && pasteData.Version < new VersionNumber(4, 4, 0))
                 return;
 
-            var entity = GameManager.server.CreateEntity(prefabname, pos, rot);
+            BaseEntity entity = null;
+
+            // Check to see if this child is already spawned
+            if (isChild && parent.children != null)
+            {
+                foreach (var child in parent.children)
+                {
+                    if (child != null && !child.IsDestroyed && child.PrefabName == prefabname && (child.transform.localPosition - localPos).sqrMagnitude < 0.001f)
+                    {
+                        entity = child;
+                        break;
+                    }
+                }
+            }
+
+            if (entity == null)
+                entity = GameManager.server.CreateEntity(prefabname, pos, rot);
 
             if (entity == null)
                 return;
@@ -1255,18 +1273,21 @@ namespace Oxide.Plugins
             // If the entity is a child, set the parent and the local position and rotation.
             if (isChild)
             {
-                entity.gameObject.Identity();
-                if( data.ContainsKey( "parentbone" ) )
-                    entity.SetParent(parent, data["parentbone"].ToString());
-                else
-                    entity.SetParent(parent);
-                
-                // Custom door controller doesn't have null checks for deployedBy baseplayer
-                if(entity is not CustomDoorManipulator)
-                    entity.OnDeployed(parent, null, _emptyItem);
-                
-                transform.localPosition = (Vector3) data["position"];
-                transform.localRotation = (Quaternion) data["rotation"];
+                if (!entity.isSpawned)
+                {
+                    entity.gameObject.Identity();
+                    if (data.ContainsKey("parentbone"))
+                        entity.SetParent(parent, data["parentbone"].ToString());
+                    else
+                        entity.SetParent(parent);
+
+                    // Custom door controller doesn't have null checks for deployedBy baseplayer
+                    if (entity is not CustomDoorManipulator)
+                        entity.OnDeployed(parent, null, _emptyItem);
+
+                    transform.localPosition = localPos;
+                    transform.localRotation = localRot;
+                }
             }
             // If the entity is not a child, set the position and rotation.
             else
@@ -1327,8 +1348,9 @@ namespace Oxide.Plugins
                 entity.enableSaving = false;
             }
 
-            entity.Spawn();
-            
+            if (!entity.isSpawned)
+                entity.Spawn();
+
             var baseCombat = entity as BaseCombatEntity;
             if (buildingBlock != null)
             {
@@ -1664,7 +1686,7 @@ namespace Oxide.Plugins
 
                 if (autoTurret != null)
                 {
-                    autoTurret.Invoke(autoTurret.UpdateAttachedWeapon, 0.5f);
+                    autoTurret.UpdateAttachedWeapon();
                 }
 
                 containerIo.SendNetworkUpdate();
@@ -1848,17 +1870,6 @@ namespace Oxide.Plugins
                 }
             }
             
-            if (entity is ElectricFurnaceIO electricFurnaceIO)
-            {
-                if (electricFurnaceIO.GetParentEntity() is ElectricOven oven)
-                {
-                    if( oven.spawnedIo.IsValid(true) )
-                        oven.spawnedIo.Get(true).Kill();
-                    
-                    oven.spawnedIo.Set( ioEntity );
-                }
-            }
-
             var flagsData = new Dictionary<string, object>();
 
             if (data.ContainsKey("flags"))
@@ -1881,17 +1892,17 @@ namespace Oxide.Plugins
             if (data.ContainsKey("children"))
             {
                 var children = data["children"] as List<object>;
-                
-                if (children == null)
-                    return;
-                
-                foreach (var child in children)
+
+                if (children != null)
                 {
-                    var childData = child as Dictionary<string, object>;
-                    if (childData == null)
-                        continue;
-                    
-                    PasteEntity(childData, pasteData, entity);
+                    foreach (var child in children)
+                    {
+                        var childData = child as Dictionary<string, object>;
+                        if (childData == null)
+                            continue;
+
+                        PasteEntity(childData, pasteData, entity);
+                    }
                 }
             }
             
@@ -2122,6 +2133,38 @@ namespace Oxide.Plugins
             var quaternionRotation = Quaternion.EulerRotation(eulerRotation);
             var preloaddata = new HashSet<Dictionary<string, object>>();
 
+            void PreLoadChildrenData(Dictionary<string, object> entity)
+            {
+                if (entity.ContainsKey("children"))
+                {
+                    var children = entity["children"] as List<object>;
+
+                    if (children == null)
+                        return;
+
+                    // Set the (local) position and rotation of the children
+                    foreach (var child in children)
+                    {
+                        var childData = child as Dictionary<string, object>;
+                        if (childData == null)
+                            continue;
+
+                        var childPos = (Dictionary<string, object>)childData["pos"];
+                        var childRot = (Dictionary<string, object>)childData["rot"];
+
+                        childData.Add("position",
+                            new Vector3(Convert.ToSingle(childPos["x"]), Convert.ToSingle(childPos["y"]),
+                                Convert.ToSingle(childPos["z"])));
+                        childData.Add("rotation",
+                            Quaternion.Euler(new Vector3(Convert.ToSingle(childRot["x"]),
+                                Convert.ToSingle(childRot["y"]), Convert.ToSingle(childRot["z"]))));
+
+                        // Recursively process the child's children
+                        PreLoadChildrenData(childData);
+                    }
+                }
+            }
+
             foreach (Dictionary<string, object> entity in entities)
             {
                 if (!deployables && !entity.ContainsKey("grade"))
@@ -2142,33 +2185,9 @@ namespace Oxide.Plugins
 
                 if (!vending && entity["prefabname"].ToString().Contains("vendingmachine"))
                     entity.Remove("vendingmachine");
-                
-                if (entity.ContainsKey("children"))
-                {
-                    var children = entity["children"] as List<object>;
-                    
-                    if (children == null)
-                        continue;
-                    
-                    // Set the (local) position and rotation of the children
-                    foreach (var child in children)
-                    {
-                        var childData = child as Dictionary<string, object>;
-                        if (childData == null)
-                            continue;
-                        
-                        var childPos = (Dictionary<string, object>)childData["pos"];
-                        var childRot = (Dictionary<string, object>)childData["rot"];
-                        
-                        childData.Add("position",
-                            new Vector3(Convert.ToSingle(childPos["x"]), Convert.ToSingle(childPos["y"]),
-                                Convert.ToSingle(childPos["z"])));
-                        childData.Add("rotation",
-                            Quaternion.Euler(new Vector3(Convert.ToSingle(childRot["x"]),
-                                Convert.ToSingle(childRot["y"]), Convert.ToSingle(childRot["z"]))));
-                    }
-                }
-                
+
+                PreLoadChildrenData(entity);
+
                 preloaddata.Add(entity);
             }
 
