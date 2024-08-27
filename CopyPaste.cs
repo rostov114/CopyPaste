@@ -1462,12 +1462,6 @@ namespace Oxide.Plugins
                 autoTurret.SendNetworkUpdate();
             }
 
-            var industrialCrafter = entity as IndustrialCrafter;
-            if (industrialCrafter != null)
-            {
-                industrialCrafter.SetFlag(IndustrialCrafter.Crafting, false);
-            }
-
             var box = entity as IItemContainerEntity;
             if (box != null)
             {
@@ -1477,9 +1471,9 @@ namespace Oxide.Plugins
                     {
                         storageContainer.CreateInventory(true);
                     }
-                    else if (industrialCrafter != null)
+                    else if (entity is IndustrialCrafter crafter)
                     {
-                        industrialCrafter.CreateInventory(true);
+                        crafter.CreateInventory(true);
                     }
                     else if (entity is ContainerIOEntity containerIo)
                     {
@@ -1921,6 +1915,12 @@ namespace Oxide.Plugins
                 entity.SetFlag(flag.Key, flag.Value);
             }
             
+            var industrialCrafter = entity as IndustrialCrafter;
+            if (industrialCrafter != null)
+            {
+                industrialCrafter.SetFlag(IndustrialCrafter.Crafting, false);
+            }
+
             if (data.ContainsKey("children"))
             {
                 var children = data["children"] as List<object>;
